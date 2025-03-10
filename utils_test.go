@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -97,7 +98,7 @@ func (*testHandlerOrderQuery) ID() []byte {
 type testHandler struct {
 }
 
-func (hdl *testHandler) Handle(qry Query, res *Result) error {
+func (hdl *testHandler) Handle(ctx context.Context, qry Query, res *Result) error {
 	switch qry.(type) {
 	case *testQueryStruct, testQueryString:
 		res.Set([]interface{}{"bar"})
@@ -112,7 +113,7 @@ func (hdl *testHandler) Handle(qry Query, res *Result) error {
 type testHandlerWithErrors struct {
 }
 
-func (hdl *testHandlerWithErrors) Handle(qry Query, res *Result) error {
+func (hdl *testHandlerWithErrors) Handle(ctx context.Context, qry Query, res *Result) error {
 	switch qry.(type) {
 	case *testQueryError:
 		return errors.New("query failed")
@@ -124,7 +125,7 @@ type testHandlerOrder struct {
 	position uint32
 }
 
-func (hdl *testHandlerOrder) Handle(qry Query, res *Result) error {
+func (hdl *testHandlerOrder) Handle(ctx context.Context, qry Query, res *Result) error {
 	if qry, listens := qry.(*testHandlerOrderQuery); listens {
 		qry.HandlerPosition(hdl.position)
 		res.Add("bar")
@@ -136,7 +137,7 @@ func (hdl *testHandlerOrder) Handle(qry Query, res *Result) error {
 type testIteratorHandler struct {
 }
 
-func (hdl *testIteratorHandler) Handle(qry Query, res *IteratorResult) error {
+func (hdl *testIteratorHandler) Handle(ctx context.Context, qry Query, res *IteratorResult) error {
 	switch qry.(type) {
 	case *testQueryStruct, testQueryString:
 		res.Yield("bar")
@@ -149,7 +150,7 @@ func (hdl *testIteratorHandler) Handle(qry Query, res *IteratorResult) error {
 type testIteratorHandlerWithErrors struct {
 }
 
-func (hdl *testIteratorHandlerWithErrors) Handle(qry Query, res *IteratorResult) error {
+func (hdl *testIteratorHandlerWithErrors) Handle(ctx context.Context, qry Query, res *IteratorResult) error {
 	switch qry.(type) {
 	case *testQueryError:
 		return errors.New("query failed")
@@ -160,7 +161,7 @@ func (hdl *testIteratorHandlerWithErrors) Handle(qry Query, res *IteratorResult)
 type testCacheHandler struct {
 }
 
-func (hdl *testCacheHandler) Handle(qry Query, res *Result) error {
+func (hdl *testCacheHandler) Handle(ctx context.Context, qry Query, res *Result) error {
 	switch qry.(type) {
 	case *testCacheQuery, *testCacheQuery2:
 		// simulate that it took a second to fetch this resource
@@ -177,7 +178,7 @@ type testIteratorHandlerOrder struct {
 	position uint32
 }
 
-func (hdl *testIteratorHandlerOrder) Handle(qry Query, res *IteratorResult) error {
+func (hdl *testIteratorHandlerOrder) Handle(ctx context.Context, qry Query, res *IteratorResult) error {
 	if qry, listens := qry.(*testHandlerOrderQuery); listens {
 		qry.HandlerPosition(hdl.position)
 		res.Yield("bar")
@@ -193,7 +194,7 @@ type storeErrorsHandler struct {
 	errs map[string]error
 }
 
-func (hdl *storeErrorsHandler) Handle(qry Query, err error) {
+func (hdl *storeErrorsHandler) Handle(ctx context.Context, qry Query, err error) {
 	hdl.Lock()
 	hdl.errs[hdl.key(qry)] = err
 	hdl.Unlock()

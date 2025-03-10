@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -102,28 +103,28 @@ func (bus *Bus) InitializeIteratorHandlers(hdls ...IteratorHandler) {
 }
 
 // Query for a single result or a pre-populated collection.
-func (bus *Bus) Query(qry Query) (*Result, error) {
-	if err := bus.isValid(qry); err != nil {
+func (bus *Bus) Query(ctx context.Context, qry Query) (*Result, error) {
+	if err := bus.isValid(ctx, qry); err != nil {
 		return nil, err
 	}
 
-	res, cached := bus.result(qry)
+	res, cached := bus.result(ctx, qry)
 	if cached {
 		return res, nil
 	}
 
-	return res, bus.query(qry, res)
+	return res, bus.query(ctx, qry, res)
 }
 
 // IteratorQuery uses a channel to iterate the results while they are being populated.
 // *Iterator queries are not cached*.
-func (bus *Bus) IteratorQuery(qry Query) (*IteratorResult, error) {
-	if err := bus.isIteratorValid(qry); err != nil {
+func (bus *Bus) IteratorQuery(ctx context.Context, qry Query) (*IteratorResult, error) {
+	if err := bus.isIteratorValid(ctx, qry); err != nil {
 		return nil, err
 	}
 
 	res := newIteratorResult(bus.iteratorResultBuffer)
-	bus.enqueueIteratorQuery(qry, res)
+	bus.enqueueIteratorQuery(ctx, qry, res)
 	return res, nil
 }
 
@@ -158,20 +159,20 @@ func (bus *Bus) iteratorWorker(qryQ <-chan *pendingIteratorQuery, closed chan<- 
 
 		// wait for a listener
 		if penQry.res.waitListener(iteratorListenerTimeout) {
-			bus.iteratorQuery(penQry.qry, penQry.res)
+			bus.iteratorQuery(penQry.ctx, penQry.qry, penQry.res)
 			penQry.res.close()
 			continue
 		}
 
-		bus.error(penQry.qry, NewErrorQueryTimedOut(penQry.qry))
+		bus.error(penQry.ctx, penQry.qry, NewErrorQueryTimedOut(penQry.qry))
 	}
 	closed <- true
 }
 
-func (bus *Bus) iteratorQuery(qry Query, res *IteratorResult) {
+func (bus *Bus) iteratorQuery(ctx context.Context, qry Query, res *IteratorResult) {
 	for _, hdl := range bus.iteratorHandlers {
-		if err := hdl.Handle(qry, res); err != nil {
-			bus.error(qry, err)
+		if err := hdl.Handle(ctx, qry, res); err != nil {
+			bus.error(ctx, qry, err)
 			return
 		}
 		if res.propagationStopped() {
@@ -179,21 +180,22 @@ func (bus *Bus) iteratorQuery(qry Query, res *IteratorResult) {
 		}
 	}
 	if !res.isHandled() {
-		bus.error(qry, NewErrorNoQueryHandlersFound(qry))
+		bus.error(ctx, qry, NewErrorNoQueryHandlersFound(qry))
 	}
 }
 
-func (bus *Bus) enqueueIteratorQuery(qry Query, res *IteratorResult) {
+func (bus *Bus) enqueueIteratorQuery(ctx context.Context, qry Query, res *IteratorResult) {
 	bus.iteratorQueryQueue <- &pendingIteratorQuery{
+		ctx: ctx,
 		qry: qry,
 		res: res,
 	}
 }
 
-func (bus *Bus) query(qry Query, res *Result) error {
+func (bus *Bus) query(ctx context.Context, qry Query, res *Result) error {
 	for _, hdl := range bus.handlers {
-		if err := hdl.Handle(qry, res); err != nil {
-			bus.error(qry, err)
+		if err := hdl.Handle(ctx, qry, res); err != nil {
+			bus.error(ctx, qry, err)
 			return err
 		}
 		if res.propagationStopped() {
@@ -203,18 +205,18 @@ func (bus *Bus) query(qry Query, res *Result) error {
 
 	if !res.isHandled() {
 		err := NewErrorNoQueryHandlersFound(qry)
-		bus.error(qry, err)
+		bus.error(ctx, qry, err)
 		return err
 	}
 
-	bus.handleCache(qry, res)
+	bus.handleCache(ctx, qry, res)
 	return nil
 }
 
-func (bus *Bus) result(qry Query) (*Result, bool) {
+func (bus *Bus) result(ctx context.Context, qry Query) (*Result, bool) {
 	if qry, implements := qry.(Cacheable); implements {
 		for _, adp := range bus.cacheAdapters {
-			if res := adp.Get(qry); res != nil {
+			if res := adp.Get(ctx, qry); res != nil {
 				res.loadedFromCache()
 				return res, true
 			}
@@ -224,13 +226,13 @@ func (bus *Bus) result(qry Query) (*Result, bool) {
 	return newResult(), false
 }
 
-func (bus *Bus) handleCache(qry Query, res *Result) {
+func (bus *Bus) handleCache(ctx context.Context, qry Query, res *Result) {
 	if qry, implements := qry.(Cacheable); implements && qry.CacheDuration() > 0 {
 		at := time.Now()
 		res.expires(at.Add(qry.CacheDuration()))
 		cached := false
 		for _, adp := range bus.cacheAdapters {
-			cached = cached || adp.Set(qry, res)
+			cached = cached || adp.Set(ctx, qry, res)
 		}
 		if cached {
 			res.cached(at)
@@ -259,36 +261,36 @@ func (bus *Bus) shutdown() {
 	atomic.CompareAndSwapUint32(bus.shuttingDown, 1, 0)
 }
 
-func (bus *Bus) isValid(qry Query) error {
+func (bus *Bus) isValid(ctx context.Context, qry Query) error {
 	var err error
 	if qry == nil {
 		err = InvalidQueryError
-		bus.error(qry, err)
+		bus.error(ctx, qry, err)
 		return err
 	}
 	return nil
 }
 
-func (bus *Bus) isIteratorValid(qry Query) error {
-	err := bus.isValid(qry)
+func (bus *Bus) isIteratorValid(ctx context.Context, qry Query) error {
+	err := bus.isValid(ctx, qry)
 	if err != nil {
 		return err
 	}
 	if !bus.isInitialized() {
 		err = BusNotInitializedError
-		bus.error(qry, err)
+		bus.error(ctx, qry, err)
 		return err
 	}
 	if bus.isShuttingDown() {
 		err = BusIsShuttingDownError
-		bus.error(qry, err)
+		bus.error(ctx, qry, err)
 		return err
 	}
 	return nil
 }
 
-func (bus *Bus) error(qry Query, err error) {
+func (bus *Bus) error(ctx context.Context, qry Query, err error) {
 	for _, errHdl := range bus.errorHandlers {
-		errHdl.Handle(qry, err)
+		errHdl.Handle(ctx, qry, err)
 	}
 }
